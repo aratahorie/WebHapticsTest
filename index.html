@@ -4,8 +4,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>WebGL × Haptics — Animation Sync Demo</title>
-  <meta name="description" content="3D animation with perfectly synchronized haptic feedback on mobile devices." />
+  <title>WebGL × Haptics — Haptic Sync Demo</title>
+  <meta name="description" content="Tap-to-advance 3D animation with synchronized haptic feedback." />
   <meta name="theme-color" content="#0a0a1a" />
   <link rel="icon"
     href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🫨</text></svg>" />
@@ -24,21 +24,21 @@
       <span class="hud-icon">🫨</span>
       <h1>Haptic Sync</h1>
     </div>
-    <p id="hud-subtitle">3D Animation × Haptic Feedback</p>
+    <p id="hud-subtitle">Tap-to-Advance Animation × Haptic Feedback</p>
   </div>
 
-  <!-- Timeline progress -->
-  <div id="timeline">
-    <div id="timeline-bar"></div>
+  <!-- Step counter -->
+  <div id="step-counter">
+    <span id="step-current">0</span> / <span id="step-total">7</span>
   </div>
 
-  <!-- Play button (centered, large) -->
-  <div id="play-container">
-    <button id="btn-play">
-      <span id="play-icon">▶</span>
-      <span id="play-text">Play</span>
-    </button>
-    <p id="play-hint">Tap to start animation with haptic feedback</p>
+  <!-- Central prompt area — user taps this -->
+  <div id="tap-area">
+    <div id="tap-prompt">
+      <div id="prompt-icon">👆</div>
+      <div id="prompt-text">Tap to Start</div>
+      <div id="prompt-sub">Each tap plays the next scene with haptic feedback</div>
+    </div>
   </div>
 
   <!-- Impact flash overlay -->
