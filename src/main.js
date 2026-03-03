@@ -4,25 +4,88 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { WebHaptics } from 'web-haptics';
 
 // ============================================
-// Haptics
+// Haptics — with user gesture priming & collision queue
 // ============================================
 const haptics = new WebHaptics({ debug: true });
 
-// Map collision intensity (0–1) to haptic patterns
-function triggerCollisionHaptic(normalizedForce) {
-    if (normalizedForce < 0.05) return; // ignore tiny impacts
+// Whether the haptic system has been primed via a user gesture
+let hapticsPrimed = false;
 
-    if (normalizedForce > 0.7) {
-        // Strong impact — heavy + error-style triple buzz
+// Collision haptic queue — accumulates impacts to be fired during user gestures
+// (iOS requires user gesture context for each haptic trigger)
+let pendingCollisionForce = 0;
+let lastGlobalHapticTime = 0;
+const HAPTIC_COOLDOWN = 60; // ms between haptic events
+
+/**
+ * Prime the haptics system — must be called from a user gesture (touch/click).
+ * This unlocks AudioContext for desktop debug and vibrate API on Android.
+ */
+function primeHaptics() {
+    if (hapticsPrimed) return;
+    hapticsPrimed = true;
+    // Trigger a minimal haptic to unlock all subsystems
+    haptics.trigger('selection');
+}
+
+/**
+ * Called from cannon-es collision callbacks (NOT in user gesture context).
+ * Uses navigator.vibrate() directly for Android, queues for iOS.
+ */
+function triggerCollisionHaptic(normalizedForce) {
+    if (normalizedForce < 0.05) return;
+
+    const now = performance.now();
+    if (now - lastGlobalHapticTime < HAPTIC_COOLDOWN) return;
+    lastGlobalHapticTime = now;
+
+    // Android/Chrome: navigator.vibrate() works outside user gesture after initial unlock
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+        let vibrationMs;
+        if (normalizedForce > 0.7) {
+            vibrationMs = [40, 30, 40]; // double pulse for heavy
+        } else if (normalizedForce > 0.35) {
+            vibrationMs = [25, 20, 15]; // lighter double
+        } else {
+            vibrationMs = [15]; // single short
+        }
+        navigator.vibrate(vibrationMs);
+    }
+
+    // iOS fallback: queue the force for the next user gesture
+    pendingCollisionForce = Math.max(pendingCollisionForce, normalizedForce);
+}
+
+/**
+ * Process any queued collision haptics — called from user gesture handlers.
+ * This is the iOS path where haptics can only fire within touch events.
+ */
+function processPendingCollisionHaptics() {
+    if (pendingCollisionForce <= 0) return;
+    const force = pendingCollisionForce;
+    pendingCollisionForce = 0;
+
+    if (force > 0.7) {
         haptics.trigger('heavy');
-    } else if (normalizedForce > 0.35) {
-        // Medium impact — nudge
+    } else if (force > 0.35) {
         haptics.trigger('nudge');
     } else {
-        // Light impact — light tap
         haptics.trigger('light');
     }
 }
+
+// Global touch/pointer handlers to prime haptics and process iOS collision queue
+function onGlobalPointerDown() {
+    primeHaptics();
+    processPendingCollisionHaptics();
+}
+function onGlobalPointerMove() {
+    // During active touch (drag), process any collision haptics in gesture context
+    processPendingCollisionHaptics();
+}
+document.addEventListener('pointerdown', onGlobalPointerDown, { passive: true });
+document.addEventListener('pointermove', onGlobalPointerMove, { passive: true });
+document.addEventListener('pointerup', () => processPendingCollisionHaptics(), { passive: true });
 
 // ============================================
 // UI Elements
