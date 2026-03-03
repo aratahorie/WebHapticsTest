@@ -234,20 +234,33 @@ function onTapObject(object) {
     });
 }
 
+// Track tap vs drag to avoid triggering haptics during orbit controls
+let pointerDownPos = null;
+const TAP_THRESHOLD = 10; // px — movement beyond this is a drag, not a tap
+
 function handlePointerDown(event) {
-    event.preventDefault();
+    pointerDownPos = { x: event.clientX, y: event.clientY };
+}
 
-    const x = event.clientX ?? event.touches?.[0]?.clientX;
-    const y = event.clientY ?? event.touches?.[0]?.clientY;
-    if (x === undefined || y === undefined) return;
+function handlePointerUp(event) {
+    if (!pointerDownPos) return;
 
-    pointer.x = (x / window.innerWidth) * 2 - 1;
-    pointer.y = -(y / window.innerHeight) * 2 + 1;
+    const dx = event.clientX - pointerDownPos.x;
+    const dy = event.clientY - pointerDownPos.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    pointerDownPos = null;
+
+    // If the pointer moved too much, it's a drag (orbit controls), not a tap
+    if (dist > TAP_THRESHOLD) return;
+
+    pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
+    pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
 
     raycaster.setFromCamera(pointer, camera);
     const intersects = raycaster.intersectObjects(interactiveObjects);
 
     if (intersects.length > 0) {
+        // Trigger haptics synchronously within the user gesture context (critical for iOS)
         onTapObject(intersects[0].object);
     }
 }
@@ -281,7 +294,12 @@ function handlePointerMove(event) {
     }
 }
 
-canvas.addEventListener('pointerdown', handlePointerDown, { passive: false });
+// Use pointerup (not pointerdown) — iOS Safari requires haptic triggers
+// in click/pointerup user gesture context for the hidden checkbox trick to work.
+// Do NOT use { passive: false } or event.preventDefault() as this blocks
+// iOS from recognizing the gesture as a valid user interaction.
+canvas.addEventListener('pointerdown', handlePointerDown);
+canvas.addEventListener('pointerup', handlePointerUp);
 canvas.addEventListener('pointermove', handlePointerMove, { passive: true });
 
 // ============================================
