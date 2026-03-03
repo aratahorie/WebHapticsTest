@@ -4,9 +4,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>WebGL × Haptics — Collision Feedback Demo</title>
-  <meta name="description"
-    content="Physics-based 3D demo where object collisions trigger haptic feedback on mobile devices." />
+  <title>WebGL × Haptics — Animation Sync Demo</title>
+  <meta name="description" content="3D animation with perfectly synchronized haptic feedback on mobile devices." />
   <meta name="theme-color" content="#0a0a1a" />
   <link rel="icon"
     href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🫨</text></svg>" />
@@ -23,32 +22,32 @@
   <div id="hud">
     <div id="hud-title">
       <span class="hud-icon">🫨</span>
-      <h1>Collision Haptics</h1>
+      <h1>Haptic Sync</h1>
     </div>
-    <p id="hud-instruction">Drag & throw cubes to feel collision impacts</p>
+    <p id="hud-subtitle">3D Animation × Haptic Feedback</p>
   </div>
 
-  <!-- Collision indicator -->
+  <!-- Timeline progress -->
+  <div id="timeline">
+    <div id="timeline-bar"></div>
+  </div>
+
+  <!-- Play button (centered, large) -->
+  <div id="play-container">
+    <button id="btn-play">
+      <span id="play-icon">▶</span>
+      <span id="play-text">Play</span>
+    </button>
+    <p id="play-hint">Tap to start animation with haptic feedback</p>
+  </div>
+
+  <!-- Impact flash overlay -->
   <div id="collision-flash"></div>
-
-  <!-- Impact meter -->
-  <div id="impact-meter">
-    <div id="impact-label">IMPACT</div>
-    <div id="impact-bar-container">
-      <div id="impact-bar"></div>
-    </div>
-  </div>
-
-  <!-- Controls -->
-  <div id="controls">
-    <button id="btn-drop" title="Drop new object">＋ Drop</button>
-    <button id="btn-reset" title="Reset scene">⟳ Reset</button>
-  </div>
 
   <!-- Footer -->
   <div id="footer">
-    <span>Powered by <a href="https://haptics.lochie.me/" target="_blank" rel="noopener">web-haptics</a> + Three.js +
-      cannon-es</span>
+    <span>Powered by <a href="https://haptics.lochie.me/" target="_blank" rel="noopener">web-haptics</a> +
+      Three.js</span>
   </div>
 
   <script type="module" src="/src/main.js"></script>

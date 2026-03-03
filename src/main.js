@@ -1,168 +1,135 @@
 import * as THREE from 'three';
-import * as CANNON from 'cannon-es';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { WebHaptics } from 'web-haptics';
 
 // ============================================
-// Platform detection
+// Haptics
 // ============================================
-const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-const hasVibrate = typeof navigator.vibrate === 'function';
+const haptics = new WebHaptics();
 
 // ============================================
-// Web Audio — collision impact sounds
+// Animation timeline — haptic events at specific times (ms)
+// These define BOTH the haptic pattern AND the visual keyframes.
 // ============================================
-// Works on ALL platforms after first user touch unlocks AudioContext.
-// Provides audio feedback for collisions regardless of user gesture context.
+const TIMELINE_DURATION = 5500; // total animation length in ms
+
+// Haptic events with timestamps for visual sync
+const HAPTIC_EVENTS = [
+    { time: 700, intensity: 1.0, label: 'IMPACT' },    // Ball hits ground
+    { time: 1150, intensity: 0.7, label: 'BOUNCE' },     // First bounce
+    { time: 1500, intensity: 0.45, label: 'BOUNCE' },     // Second bounce
+    { time: 1750, intensity: 0.25, label: 'BOUNCE' },     // Third bounce
+    { time: 2500, intensity: 0.6, label: 'HIT' },        // Ball hits block 1
+    { time: 2800, intensity: 0.5, label: 'HIT' },        // Block 1 hits block 2
+    { time: 3100, intensity: 0.4, label: 'HIT' },        // Block 2 hits block 3
+    { time: 3400, intensity: 0.8, label: 'CRASH' },      // Block 3 hits wall
+    { time: 4200, intensity: 0.3, label: 'SETTLE' },     // Rumble settle
+];
+
+// Build a single web-haptics pattern from HAPTIC_EVENTS
+function buildHapticPattern() {
+    const pattern = [];
+    let currentTime = 0;
+
+    for (const event of HAPTIC_EVENTS) {
+        const delay = event.time - currentTime;
+        const duration = 15 + event.intensity * 30; // 15–45ms
+        pattern.push({
+            delay: delay > 0 ? delay : undefined,
+            duration,
+            intensity: event.intensity,
+        });
+        currentTime = event.time + duration;
+    }
+
+    return pattern;
+}
+
+const HAPTIC_PATTERN = buildHapticPattern();
+
+// ============================================
+// Web Audio — impact sounds (supplement haptics)
+// ============================================
 let audioCtx = null;
 
 function unlockAudio() {
     if (audioCtx) return;
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    // iOS requires resume inside user gesture
-    if (audioCtx.state === 'suspended') {
-        audioCtx.resume();
-    }
+    if (audioCtx.state === 'suspended') audioCtx.resume();
 }
 
-// Synthesize a short percussive impact sound
-function playImpactSound(normalizedForce) {
+function playImpactSound(intensity) {
     if (!audioCtx || audioCtx.state !== 'running') return;
-
     const now = audioCtx.currentTime;
-
-    // Noise burst for impact texture
-    const duration = 0.03 + normalizedForce * 0.04; // 30-70ms
+    const duration = 0.03 + intensity * 0.05;
     const bufferSize = Math.ceil(audioCtx.sampleRate * duration);
     const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
     const data = noiseBuffer.getChannelData(0);
     for (let i = 0; i < bufferSize; i++) {
-        // Exponential decay noise
         data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufferSize * 0.2));
     }
+    const src = audioCtx.createBufferSource();
+    src.buffer = noiseBuffer;
 
-    const noiseSource = audioCtx.createBufferSource();
-    noiseSource.buffer = noiseBuffer;
-
-    // Low-pass filter for a "thud" character
     const filter = audioCtx.createBiquadFilter();
     filter.type = 'lowpass';
-    filter.frequency.value = 300 + normalizedForce * 800; // 300-1100 Hz
+    filter.frequency.value = 300 + intensity * 900;
     filter.Q.value = 1.5;
 
-    // Gain with impact force
     const gain = audioCtx.createGain();
-    gain.gain.setValueAtTime(0.15 + normalizedForce * 0.35, now); // 0.15-0.5
+    gain.gain.setValueAtTime(0.15 + intensity * 0.25, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
 
-    // Sub-bass oscillator for heavy impacts
-    let osc = null;
-    if (normalizedForce > 0.3) {
-        osc = audioCtx.createOscillator();
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(audioCtx.destination);
+    src.start(now);
+    src.stop(now + duration);
+
+    if (intensity > 0.4) {
+        const osc = audioCtx.createOscillator();
         osc.type = 'sine';
-        osc.frequency.setValueAtTime(60 + normalizedForce * 40, now); // 60-100 Hz
-        osc.frequency.exponentialRampToValueAtTime(30, now + duration);
-
+        osc.frequency.setValueAtTime(50 + intensity * 50, now);
+        osc.frequency.exponentialRampToValueAtTime(25, now + duration);
         const oscGain = audioCtx.createGain();
-        oscGain.gain.setValueAtTime(normalizedForce * 0.3, now);
+        oscGain.gain.setValueAtTime(intensity * 0.2, now);
         oscGain.gain.exponentialRampToValueAtTime(0.001, now + duration);
-
         osc.connect(oscGain);
         oscGain.connect(audioCtx.destination);
         osc.start(now);
         osc.stop(now + duration);
     }
-
-    noiseSource.connect(filter);
-    filter.connect(gain);
-    gain.connect(audioCtx.destination);
-
-    noiseSource.start(now);
-    noiseSource.stop(now + duration);
 }
 
 // ============================================
-// Haptics (via web-haptics — for user-gesture-driven events only)
-// ============================================
-const haptics = new WebHaptics({ debug: false });
-
-// ============================================
-// Collision feedback — combines audio + vibration
-// ============================================
-let lastCollisionTime = 0;
-const COLLISION_COOLDOWN = 80; // ms
-
-function onCollision(normalizedForce) {
-    if (normalizedForce < 0.05) return;
-
-    const now = performance.now();
-    if (now - lastCollisionTime < COLLISION_COOLDOWN) return;
-    lastCollisionTime = now;
-
-    // Audio feedback (works on all platforms from any context after unlock)
-    playImpactSound(normalizedForce);
-
-    // Vibration API (Android — works from rAF after initial user gesture)
-    if (hasVibrate) {
-        if (normalizedForce > 0.7) {
-            navigator.vibrate([30, 20, 30]);
-        } else if (normalizedForce > 0.35) {
-            navigator.vibrate([20]);
-        } else {
-            navigator.vibrate([12]);
-        }
-    }
-}
-
-// ============================================
-// UI Elements
-// ============================================
-const collisionFlash = document.getElementById('collision-flash');
-const impactBar = document.getElementById('impact-bar');
-const btnDrop = document.getElementById('btn-drop');
-const btnReset = document.getElementById('btn-reset');
-let flashTimeout = null;
-let impactDecayRaf = null;
-let currentImpact = 0;
-
-function showImpact(normalizedForce) {
-    currentImpact = Math.max(currentImpact, normalizedForce);
-    const pct = Math.min(currentImpact * 100, 100);
-    impactBar.style.height = pct + '%';
-    impactBar.classList.toggle('strong', normalizedForce > 0.5);
-
-    if (normalizedForce > 0.2) {
-        collisionFlash.classList.add('active');
-        clearTimeout(flashTimeout);
-        flashTimeout = setTimeout(() => {
-            collisionFlash.classList.remove('active');
-        }, 120);
-    }
-
-    cancelAnimationFrame(impactDecayRaf);
-    decayImpact();
-}
-
-function decayImpact() {
-    impactDecayRaf = requestAnimationFrame(() => {
-        currentImpact *= 0.92;
-        if (currentImpact < 0.01) currentImpact = 0;
-        impactBar.style.height = (currentImpact * 100) + '%';
-        if (currentImpact > 0) decayImpact();
-    });
-}
-
-// ============================================
-// Three.js Setup
+// UI
 // ============================================
 const canvas = document.getElementById('webgl-canvas');
+const btnPlay = document.getElementById('btn-play');
+const playIcon = document.getElementById('play-icon');
+const playText = document.getElementById('play-text');
+const playHint = document.getElementById('play-hint');
+const timelineEl = document.getElementById('timeline');
+const timelineBar = document.getElementById('timeline-bar');
+const collisionFlash = document.getElementById('collision-flash');
+let flashTimeout = null;
+
+function flash(intensity) {
+    collisionFlash.style.background = `radial-gradient(circle at center, rgba(99, 102, 241, ${0.1 + intensity * 0.25}), transparent 70%)`;
+    collisionFlash.classList.add('active');
+    clearTimeout(flashTimeout);
+    flashTimeout = setTimeout(() => collisionFlash.classList.remove('active'), 80 + intensity * 60);
+}
+
+// ============================================
+// Three.js Scene
+// ============================================
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0a0a1a);
 scene.fog = new THREE.FogExp2(0x0a0a1a, 0.025);
 
-const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 100);
-camera.position.set(0, 6, 12);
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(4, 3.5, 9);
+camera.lookAt(2, 1, 0);
 
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -172,30 +139,17 @@ renderer.toneMappingExposure = 1.0;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-const controls = new OrbitControls(camera, canvas);
-controls.enableDamping = true;
-controls.dampingFactor = 0.08;
-controls.minDistance = 5;
-controls.maxDistance = 25;
-controls.maxPolarAngle = Math.PI / 2 - 0.05;
-controls.target.set(0, 1, 0);
-
-// ============================================
 // Lighting
-// ============================================
-const ambientLight = new THREE.AmbientLight(0x404060, 0.5);
-scene.add(ambientLight);
+scene.add(new THREE.AmbientLight(0x404060, 0.5));
 
 const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
 dirLight.position.set(8, 12, 6);
 dirLight.castShadow = true;
 dirLight.shadow.mapSize.set(1024, 1024);
-dirLight.shadow.camera.left = -10;
-dirLight.shadow.camera.right = 10;
-dirLight.shadow.camera.top = 10;
-dirLight.shadow.camera.bottom = -10;
-dirLight.shadow.camera.near = 0.1;
-dirLight.shadow.camera.far = 30;
+dirLight.shadow.camera.left = -8;
+dirLight.shadow.camera.right = 8;
+dirLight.shadow.camera.top = 8;
+dirLight.shadow.camera.bottom = -8;
 dirLight.shadow.bias = -0.002;
 scene.add(dirLight);
 
@@ -204,293 +158,287 @@ rimLight.position.set(-6, 5, -4);
 scene.add(rimLight);
 
 const warmLight = new THREE.PointLight(0xf97316, 1, 20);
-warmLight.position.set(5, 3, 4);
+warmLight.position.set(6, 3, 4);
 scene.add(warmLight);
 
 // ============================================
-// Cannon.js Physics World
+// Scene Objects
 // ============================================
-const world = new CANNON.World({
-    gravity: new CANNON.Vec3(0, -9.82, 0),
-});
-world.broadphase = new CANNON.NaiveBroadphase();
-world.solver.iterations = 10;
-world.defaultContactMaterial.restitution = 0.45;
-world.defaultContactMaterial.friction = 0.4;
 
-// ============================================
-// Arena — Floor + Walls
-// ============================================
-const ARENA_SIZE = 6;
-const WALL_HEIGHT = 3;
-const WALL_THICKNESS = 0.15;
+// Ground
+const groundGeo = new THREE.BoxGeometry(16, 0.2, 10);
+const groundMat = new THREE.MeshStandardMaterial({ color: 0x14142e, roughness: 0.8, metalness: 0.2 });
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.position.y = -0.1;
+ground.receiveShadow = true;
+scene.add(ground);
 
-const floorMat3D = new THREE.MeshStandardMaterial({
-    color: 0x14142e, roughness: 0.8, metalness: 0.2,
-});
-const floorMesh = new THREE.Mesh(new THREE.BoxGeometry(ARENA_SIZE * 2, 0.2, ARENA_SIZE * 2), floorMat3D);
-floorMesh.position.y = -0.1;
-floorMesh.receiveShadow = true;
-scene.add(floorMesh);
-
-const floorBody = new CANNON.Body({
-    mass: 0,
-    shape: new CANNON.Box(new CANNON.Vec3(ARENA_SIZE, 0.1, ARENA_SIZE)),
-    position: new CANNON.Vec3(0, -0.1, 0),
-});
-world.addBody(floorBody);
-
-const grid = new THREE.GridHelper(ARENA_SIZE * 2, 20, 0x2a2a4a, 0x1a1a3a);
+const grid = new THREE.GridHelper(16, 32, 0x2a2a4a, 0x1a1a3a);
 grid.position.y = 0.01;
 scene.add(grid);
 
-const wallMat3D = new THREE.MeshStandardMaterial({
-    color: 0x1e1e3e, roughness: 0.6, metalness: 0.3, transparent: true, opacity: 0.35,
+// Ball
+const ballGeo = new THREE.SphereGeometry(0.5, 48, 48);
+const ballMat = new THREE.MeshStandardMaterial({
+    color: 0x6366f1, roughness: 0.15, metalness: 0.8,
+    emissive: 0x4338ca, emissiveIntensity: 0.1,
 });
+const ball = new THREE.Mesh(ballGeo, ballMat);
+ball.castShadow = true;
+scene.add(ball);
 
-function createWall(px, py, pz, sx, sy, sz) {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(sx * 2, sy * 2, sz * 2), wallMat3D);
-    mesh.position.set(px, py, pz);
-    mesh.receiveShadow = true;
-    scene.add(mesh);
-    const body = new CANNON.Body({
-        mass: 0,
-        shape: new CANNON.Box(new CANNON.Vec3(sx, sy, sz)),
-        position: new CANNON.Vec3(px, py, pz),
-    });
-    world.addBody(body);
-}
-
-createWall(0, WALL_HEIGHT / 2, -ARENA_SIZE, ARENA_SIZE, WALL_HEIGHT / 2, WALL_THICKNESS);
-createWall(0, WALL_HEIGHT / 2, ARENA_SIZE, ARENA_SIZE, WALL_HEIGHT / 2, WALL_THICKNESS);
-createWall(-ARENA_SIZE, WALL_HEIGHT / 2, 0, WALL_THICKNESS, WALL_HEIGHT / 2, ARENA_SIZE);
-createWall(ARENA_SIZE, WALL_HEIGHT / 2, 0, WALL_THICKNESS, WALL_HEIGHT / 2, ARENA_SIZE);
-
-// ============================================
-// Dynamic Objects
-// ============================================
-const OBJECT_COLORS = [
-    0x6366f1, 0xf59e0b, 0xef4444, 0x10b981,
-    0x8b5cf6, 0x06b6d4, 0xf97316, 0xec4899,
-];
-const SHAPES = ['sphere', 'box', 'cylinder'];
-const dynamicBodies = [];
-const MAX_FORCE = 30;
-
-function createDynamicObject(type, position) {
-    let mesh, body;
-    const color = OBJECT_COLORS[Math.floor(Math.random() * OBJECT_COLORS.length)];
+// Blocks (3 blocks that will be hit in chain reaction)
+const blockGeo = new THREE.BoxGeometry(0.8, 0.8, 0.8);
+const blockColors = [0xf59e0b, 0xef4444, 0x10b981];
+const blocks = blockColors.map((color, i) => {
     const mat = new THREE.MeshStandardMaterial({
         color, roughness: 0.25, metalness: 0.7,
         emissive: color, emissiveIntensity: 0.05,
     });
-    const size = 0.4 + Math.random() * 0.3;
-
-    if (type === 'sphere') {
-        mesh = new THREE.Mesh(new THREE.SphereGeometry(size, 32, 32), mat);
-        body = new CANNON.Body({ mass: size * 3, shape: new CANNON.Sphere(size) });
-    } else if (type === 'box') {
-        mesh = new THREE.Mesh(new THREE.BoxGeometry(size * 2, size * 2, size * 2), mat);
-        body = new CANNON.Body({ mass: size * 4, shape: new CANNON.Box(new CANNON.Vec3(size, size, size)) });
-    } else {
-        mesh = new THREE.Mesh(new THREE.CylinderGeometry(size * 0.8, size * 0.8, size * 2, 24), mat);
-        body = new CANNON.Body({ mass: size * 3.5, shape: new CANNON.Cylinder(size * 0.8, size * 0.8, size * 2, 12) });
-    }
-
+    const mesh = new THREE.Mesh(blockGeo, mat);
+    mesh.position.set(2 + i * 1.4, 0.4, 0);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     scene.add(mesh);
+    return mesh;
+});
 
-    body.position.set(position.x, position.y, position.z);
-    body.angularVelocity.set(
-        (Math.random() - 0.5) * 3,
-        (Math.random() - 0.5) * 3,
-        (Math.random() - 0.5) * 3
-    );
-    world.addBody(body);
+// Wall (at the end of block chain)
+const wallGeo = new THREE.BoxGeometry(0.3, 2, 3);
+const wallMat = new THREE.MeshStandardMaterial({
+    color: 0x1e1e3e, roughness: 0.6, metalness: 0.3, transparent: true, opacity: 0.6,
+});
+const wall = new THREE.Mesh(wallGeo, wallMat);
+wall.position.set(6.5, 1, 0);
+wall.receiveShadow = true;
+scene.add(wall);
 
-    const entry = { mesh, body, emissiveBase: 0.05, lastCollisionTime: 0 };
+// ============================================
+// Keyframe animation system
+// ============================================
 
-    body.addEventListener('collide', (event) => {
-        const force = Math.abs(event.contact.getImpactVelocityAlongNormal());
-        const now = performance.now();
-        if (now - entry.lastCollisionTime < 80) return;
-        entry.lastCollisionTime = now;
-        if (force < 0.5) return;
-
-        const normalizedForce = Math.min(force / MAX_FORCE, 1);
-        onCollision(normalizedForce);
-        showImpact(normalizedForce);
-        entry.emissiveBase = 0.3 + normalizedForce * 0.7;
-    });
-
-    dynamicBodies.push(entry);
-    return entry;
+// Easing functions
+function easeOutBounce(t) {
+    if (t < 1 / 2.75) return 7.5625 * t * t;
+    if (t < 2 / 2.75) return 7.5625 * (t -= 1.5 / 2.75) * t + 0.75;
+    if (t < 2.5 / 2.75) return 7.5625 * (t -= 2.25 / 2.75) * t + 0.9375;
+    return 7.5625 * (t -= 2.625 / 2.75) * t + 0.984375;
 }
 
-function spawnInitialObjects() {
-    const positions = [
-        { x: -2, y: 5, z: -1 },
-        { x: 1, y: 7, z: 1 },
-        { x: -1, y: 9, z: 2 },
-        { x: 2, y: 6, z: -2 },
-        { x: 0, y: 11, z: 0 },
-        { x: -2.5, y: 8, z: 1.5 },
-        { x: 1.5, y: 10, z: -1.5 },
+function easeInQuad(t) { return t * t; }
+function easeOutQuad(t) { return t * (2 - t); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+// Ball animation keyframes (positions over time)
+function getBallPosition(t) {
+    // t in ms
+    if (t < 0) return { x: -2, y: 8, z: 0 }; // start above
+
+    // Phase 1: Fall (0 – 700ms)
+    if (t < 700) {
+        const p = t / 700;
+        const y = lerp(8, 0.5, easeInQuad(p));
+        return { x: -2, y, z: 0 };
+    }
+
+    // Phase 2: Bounces (700 – 1900ms)
+    const bounces = [
+        { start: 700, end: 1150, fromY: 0.5, peakY: 3.5 },
+        { start: 1150, end: 1500, fromY: 0.5, peakY: 2.0 },
+        { start: 1500, end: 1750, fromY: 0.5, peakY: 1.2 },
+        { start: 1750, end: 1950, fromY: 0.5, peakY: 0.7 },
     ];
-    positions.forEach((pos, i) => {
-        createDynamicObject(SHAPES[i % SHAPES.length], pos);
-    });
-}
 
-spawnInitialObjects();
-
-// ============================================
-// Unlock audio on first touch/click (required by all browsers)
-// ============================================
-function handleFirstInteraction() {
-    unlockAudio();
-    document.removeEventListener('touchstart', handleFirstInteraction);
-    document.removeEventListener('pointerdown', handleFirstInteraction);
-}
-document.addEventListener('touchstart', handleFirstInteraction, { passive: true });
-document.addEventListener('pointerdown', handleFirstInteraction, { passive: true });
-
-// ============================================
-// Drop / Reset buttons (haptics trigger from user gesture = works on iOS)
-// ============================================
-btnDrop.addEventListener('click', () => {
-    unlockAudio();
-    const x = (Math.random() - 0.5) * (ARENA_SIZE - 1);
-    const z = (Math.random() - 0.5) * (ARENA_SIZE - 1);
-    const type = SHAPES[Math.floor(Math.random() * SHAPES.length)];
-    createDynamicObject(type, { x, y: 8 + Math.random() * 4, z });
-    haptics.trigger('selection'); // user gesture context → works on iOS
-});
-
-btnReset.addEventListener('click', () => {
-    unlockAudio();
-    dynamicBodies.forEach(({ mesh, body }) => {
-        scene.remove(mesh);
-        mesh.geometry.dispose();
-        mesh.material.dispose();
-        world.removeBody(body);
-    });
-    dynamicBodies.length = 0;
-    haptics.trigger('warning'); // user gesture context → works on iOS
-    spawnInitialObjects();
-});
-
-// ============================================
-// Drag & Throw — spring-force keeps physics collisions active
-// ============================================
-const raycaster = new THREE.Raycaster();
-const pointerNDC = new THREE.Vector2();
-let draggedEntry = null;
-let dragPlaneY = 2;
-
-const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-const dragIntersect = new THREE.Vector3();
-
-let dragSpringTarget = new CANNON.Vec3();
-const DRAG_SPRING_STIFFNESS = 80;
-const DRAG_DAMPING = 0.85;
-
-function onPointerDown(event) {
-    unlockAudio();
-
-    pointerNDC.x = (event.clientX / window.innerWidth) * 2 - 1;
-    pointerNDC.y = -(event.clientY / window.innerHeight) * 2 + 1;
-
-    raycaster.setFromCamera(pointerNDC, camera);
-    const meshes = dynamicBodies.map(e => e.mesh);
-    const intersects = raycaster.intersectObjects(meshes);
-
-    if (intersects.length > 0) {
-        const entry = dynamicBodies.find(e => e.mesh === intersects[0].object);
-        if (entry) {
-            draggedEntry = entry;
-            dragPlaneY = entry.body.position.y;
-            dragPlane.constant = -dragPlaneY;
-
-            entry.body.velocity.setZero();
-            entry.body.angularVelocity.setZero();
-            entry.body.linearDamping = DRAG_DAMPING;
-
-            dragSpringTarget.set(entry.body.position.x, entry.body.position.y, entry.body.position.z);
-
-            controls.enabled = false;
-            haptics.trigger('selection'); // user gesture context → iOS haptic
+    for (const b of bounces) {
+        if (t >= b.start && t < b.end) {
+            const p = (t - b.start) / (b.end - b.start);
+            const y = b.fromY + (b.peakY - b.fromY) * Math.sin(p * Math.PI);
+            return { x: -2, y, z: 0 };
         }
     }
-}
 
-function onPointerMove(event) {
-    if (!draggedEntry) return;
-
-    pointerNDC.x = (event.clientX / window.innerWidth) * 2 - 1;
-    pointerNDC.y = -(event.clientY / window.innerHeight) * 2 + 1;
-
-    raycaster.setFromCamera(pointerNDC, camera);
-    if (raycaster.ray.intersectPlane(dragPlane, dragIntersect)) {
-        const cx = Math.max(-ARENA_SIZE + 1, Math.min(ARENA_SIZE - 1, dragIntersect.x));
-        const cz = Math.max(-ARENA_SIZE + 1, Math.min(ARENA_SIZE - 1, dragIntersect.z));
-        dragSpringTarget.set(cx, dragPlaneY, cz);
+    // Phase 3: Roll toward blocks (1950 – 2500ms)
+    if (t < 2500) {
+        const p = (t - 1950) / (2500 - 1950);
+        const x = lerp(-2, 1.6, easeOutQuad(p));
+        return { x, y: 0.5, z: 0 };
     }
+
+    // Phase 4: Ball stops after hitting block 1 (2500+)
+    if (t < 3000) {
+        const p = (t - 2500) / 500;
+        const x = lerp(1.6, 1.3, easeOutQuad(Math.min(p, 1)));
+        return { x, y: 0.5, z: 0 };
+    }
+
+    return { x: 1.3, y: 0.5, z: 0 };
 }
 
-function onPointerUp() {
-    if (!draggedEntry) return;
-    draggedEntry.body.linearDamping = 0.01;
-    draggedEntry = null;
-    controls.enabled = true;
+// Block animation keyframes
+function getBlockPosition(blockIndex, t) {
+    const baseX = 2 + blockIndex * 1.4;
+    const hitTimes = [2500, 2800, 3100]; // when each block gets hit
+    const hitTime = hitTimes[blockIndex];
+
+    if (t < hitTime) return { x: baseX, y: 0.4, z: 0, ry: 0 };
+
+    // Block slides forward after being hit
+    const elapsed = t - hitTime;
+    const slideDistance = blockIndex === 2 ? 0.5 : 1.2; // last block hits wall, slides less
+    const slideDuration = 250;
+
+    if (elapsed < slideDuration) {
+        const p = easeOutQuad(elapsed / slideDuration);
+        return {
+            x: baseX + slideDistance * p,
+            y: 0.4,
+            z: 0,
+            ry: p * (blockIndex === 2 ? 0.3 : 0.15),
+        };
+    }
+
+    return {
+        x: baseX + slideDistance,
+        y: 0.4,
+        z: 0,
+        ry: blockIndex === 2 ? 0.3 : 0.15,
+    };
 }
 
-canvas.addEventListener('pointerdown', onPointerDown);
-canvas.addEventListener('pointermove', onPointerMove);
-canvas.addEventListener('pointerup', onPointerUp);
-canvas.addEventListener('pointercancel', onPointerUp);
+// Wall shake on final impact
+function getWallShake(t) {
+    if (t < 3400 || t > 3900) return { x: 0, z: 0 };
+    const elapsed = t - 3400;
+    const decay = Math.exp(-elapsed / 100);
+    return {
+        x: Math.sin(elapsed * 0.05) * 0.05 * decay,
+        z: Math.cos(elapsed * 0.07) * 0.03 * decay,
+    };
+}
 
 // ============================================
-// Animation Loop
+// Animation state
+// ============================================
+let isPlaying = false;
+let animStartTime = 0;
+let nextHapticEventIndex = 0;
+
+// Initial positions
+function resetScene() {
+    ball.position.set(-2, 8, 0);
+    ball.material.emissiveIntensity = 0.1;
+    blocks.forEach((b, i) => {
+        b.position.set(2 + i * 1.4, 0.4, 0);
+        b.rotation.y = 0;
+        b.material.emissiveIntensity = 0.05;
+    });
+    wall.position.set(6.5, 1, 0);
+    timelineBar.style.width = '0%';
+    timelineEl.classList.remove('active');
+    nextHapticEventIndex = 0;
+}
+
+resetScene();
+
+// ============================================
+// Play button
+// ============================================
+btnPlay.addEventListener('click', () => {
+    if (isPlaying) return;
+
+    unlockAudio();
+    resetScene();
+
+    isPlaying = true;
+    animStartTime = performance.now();
+    nextHapticEventIndex = 0;
+
+    btnPlay.disabled = true;
+    playIcon.textContent = '⏸';
+    playText.textContent = 'Playing...';
+    timelineEl.classList.add('active');
+
+    // Fire the ENTIRE haptic pattern as one trigger (user gesture context!)
+    haptics.trigger(HAPTIC_PATTERN);
+});
+
+// ============================================
+// Animation loop
 // ============================================
 const clock = new THREE.Clock();
-const fixedTimeStep = 1 / 60;
 
 function animate() {
     requestAnimationFrame(animate);
-    const delta = clock.getDelta();
 
-    if (draggedEntry) {
-        const body = draggedEntry.body;
-        const dx = dragSpringTarget.x - body.position.x;
-        const dy = dragSpringTarget.y - body.position.y;
-        const dz = dragSpringTarget.z - body.position.z;
-        body.force.set(
-            dx * DRAG_SPRING_STIFFNESS * body.mass,
-            dy * DRAG_SPRING_STIFFNESS * body.mass - world.gravity.y * body.mass,
-            dz * DRAG_SPRING_STIFFNESS * body.mass
-        );
+    if (isPlaying) {
+        const elapsed = performance.now() - animStartTime;
+        const progress = Math.min(elapsed / TIMELINE_DURATION, 1);
+        timelineBar.style.width = (progress * 100) + '%';
+
+        // Update ball
+        const ballPos = getBallPosition(elapsed);
+        ball.position.set(ballPos.x, ballPos.y, ballPos.z);
+        ball.rotation.x += 0.03;
+
+        // Update blocks
+        blocks.forEach((block, i) => {
+            const bp = getBlockPosition(i, elapsed);
+            block.position.set(bp.x, bp.y, bp.z);
+            block.rotation.y = bp.ry || 0;
+        });
+
+        // Wall shake
+        const shake = getWallShake(elapsed);
+        wall.position.x = 6.5 + shake.x;
+        wall.position.z = shake.z;
+
+        // Trigger visual effects at haptic event times
+        while (nextHapticEventIndex < HAPTIC_EVENTS.length &&
+            elapsed >= HAPTIC_EVENTS[nextHapticEventIndex].time) {
+            const event = HAPTIC_EVENTS[nextHapticEventIndex];
+            flash(event.intensity);
+            playImpactSound(event.intensity);
+
+            // Emissive flash on relevant object
+            if (event.label === 'IMPACT' || event.label === 'BOUNCE') {
+                ball.material.emissiveIntensity = 0.3 + event.intensity * 0.7;
+            } else if (event.label === 'HIT') {
+                const blockIdx = nextHapticEventIndex - 4; // events 4,5,6 = blocks 0,1,2
+                if (blockIdx >= 0 && blockIdx < blocks.length) {
+                    blocks[blockIdx].material.emissiveIntensity = 0.3 + event.intensity * 0.7;
+                }
+            } else if (event.label === 'CRASH') {
+                blocks.forEach(b => b.material.emissiveIntensity = 0.8);
+                wall.material.opacity = 0.9;
+            }
+
+            nextHapticEventIndex++;
+        }
+
+        // Decay emissive
+        ball.material.emissiveIntensity *= 0.97;
+        if (ball.material.emissiveIntensity < 0.1) ball.material.emissiveIntensity = 0.1;
+        blocks.forEach(b => {
+            b.material.emissiveIntensity *= 0.96;
+            if (b.material.emissiveIntensity < 0.05) b.material.emissiveIntensity = 0.05;
+        });
+        wall.material.opacity += (0.6 - wall.material.opacity) * 0.05;
+
+        // End of animation
+        if (progress >= 1) {
+            isPlaying = false;
+            btnPlay.disabled = false;
+            playIcon.textContent = '▶';
+            playText.textContent = 'Replay';
+            playHint.textContent = 'Tap to play again';
+        }
     }
 
-    world.step(fixedTimeStep, delta, 3);
+    // Subtle ambient animation
+    const t = clock.getElapsedTime();
+    warmLight.position.x = 6 + Math.sin(t * 0.3) * 1;
+    warmLight.position.z = 4 + Math.cos(t * 0.4) * 1;
 
-    dynamicBodies.forEach((entry) => {
-        entry.mesh.position.copy(entry.body.position);
-        entry.mesh.quaternion.copy(entry.body.quaternion);
-
-        if (entry.emissiveBase > 0.05) {
-            entry.emissiveBase *= 0.93;
-            if (entry.emissiveBase < 0.06) entry.emissiveBase = 0.05;
-        }
-        entry.mesh.material.emissiveIntensity = entry.emissiveBase;
-    });
-
-    const t = clock.elapsedTime;
-    rimLight.position.x = -6 + Math.sin(t * 0.3) * 2;
-    warmLight.position.z = 4 + Math.cos(t * 0.4) * 2;
-
-    controls.update();
     renderer.render(scene, camera);
 }
 
