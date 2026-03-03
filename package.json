@@ -10,11 +10,12 @@
     "deploy": "gh-pages -d dist"
   },
   "dependencies": {
+    "cannon-es": "^0.20.0",
     "three": "^0.172.0",
     "web-haptics": "^0.0.6"
   },
   "devDependencies": {
-    "vite": "^6.2.0",
-    "gh-pages": "^6.3.0"
+    "gh-pages": "^6.3.0",
+    "vite": "^6.2.0"
   }
 }

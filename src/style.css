@@ -1,34 +1,34 @@
 /* ============================================
-   WebGL × Haptics — Design System
+   Collision Haptics Demo — Design System
    ============================================ */
 
 :root {
   --bg-primary: #0a0a1a;
-  --bg-secondary: #12122a;
   --bg-glass: rgba(18, 18, 42, 0.75);
   --border-glass: rgba(255, 255, 255, 0.08);
   --text-primary: #f0f0ff;
   --text-secondary: rgba(240, 240, 255, 0.6);
   --text-muted: rgba(240, 240, 255, 0.35);
   --accent-indigo: #6366f1;
-  --accent-amber: #f59e0b;
+  --accent-cyan: #06b6d4;
+  --accent-orange: #f97316;
   --accent-red: #ef4444;
-  --accent-green: #10b981;
-  --accent-purple: #8b5cf6;
   --radius-md: 12px;
   --radius-lg: 16px;
   --font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   --transition-smooth: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* Reset */
-*, *::before, *::after {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
 }
 
-html, body {
+html,
+body {
   width: 100%;
   height: 100%;
   overflow: hidden;
@@ -36,10 +36,8 @@ html, body {
   background: var(--bg-primary);
   color: var(--text-primary);
   -webkit-tap-highlight-color: transparent;
-  touch-action: none;
 }
 
-/* Canvas */
 #webgl-canvas {
   position: fixed;
   top: 0;
@@ -47,6 +45,7 @@ html, body {
   width: 100%;
   height: 100%;
   z-index: 0;
+  touch-action: none;
 }
 
 /* HUD */
@@ -56,13 +55,13 @@ html, body {
   left: 0;
   right: 0;
   z-index: 10;
-  padding: 20px 24px;
+  padding: 16px 24px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   pointer-events: none;
-  background: linear-gradient(180deg, rgba(10, 10, 26, 0.7) 0%, transparent 100%);
+  background: linear-gradient(180deg, rgba(10, 10, 26, 0.8) 0%, transparent 100%);
 }
 
 #hud-title {
@@ -72,7 +71,7 @@ html, body {
 }
 
 .hud-icon {
-  font-size: 28px;
+  font-size: 26px;
   line-height: 1;
 }
 
@@ -92,99 +91,107 @@ html, body {
   font-weight: 400;
 }
 
-/* Haptic Indicator */
-#haptic-indicator {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 8px;
-  padding: 8px 18px;
-  background: var(--bg-glass);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid var(--border-glass);
-  border-radius: 999px;
-  transition: opacity var(--transition-smooth), transform var(--transition-smooth);
+/* Collision Flash Overlay */
+#collision-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(circle at center, rgba(99, 102, 241, 0.15), transparent 70%);
+  transition: opacity 0.08s ease-out;
 }
 
-#haptic-indicator.hidden {
-  opacity: 0;
-  transform: translateY(-8px) scale(0.95);
+#collision-flash.active {
+  opacity: 1;
+}
+
+/* Impact Meter */
+#impact-meter {
+  position: fixed;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
   pointer-events: none;
 }
 
-#haptic-indicator.visible {
-  opacity: 1;
-  transform: translateY(0) scale(1);
+#impact-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  transform: rotate(180deg);
 }
 
-#haptic-pulse {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--accent-indigo);
-  animation: pulse-glow 0.6s ease-in-out infinite alternate;
+#impact-bar-container {
+  width: 6px;
+  height: 140px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+  overflow: hidden;
+  position: relative;
 }
 
-@keyframes pulse-glow {
-  0% {
-    box-shadow: 0 0 4px 1px currentColor;
-    transform: scale(0.9);
-  }
-  100% {
-    box-shadow: 0 0 12px 4px currentColor;
-    transform: scale(1.1);
-  }
+#impact-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 0%;
+  background: linear-gradient(0deg, var(--accent-indigo), var(--accent-cyan));
+  border-radius: 999px;
+  transition: height 0.1s ease-out, background 0.3s ease;
 }
 
-#haptic-name {
-  font-size: 13px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-primary);
+#impact-bar.strong {
+  background: linear-gradient(0deg, var(--accent-orange), var(--accent-red));
 }
 
-/* Legend */
-#legend {
+/* Controls */
+#controls {
   position: fixed;
-  bottom: 56px;
+  bottom: 48px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 10;
   display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 8px;
-  padding: 12px 16px;
+  gap: 10px;
+}
+
+#controls button {
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: var(--font-family);
+  color: var(--text-primary);
   background: var(--bg-glass);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--border-glass);
-  border-radius: var(--radius-lg);
-  pointer-events: none;
-  max-width: 90vw;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--transition-smooth);
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
 }
 
-.legend-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--text-secondary);
-  white-space: nowrap;
+#controls button:hover {
+  background: rgba(99, 102, 241, 0.2);
+  border-color: rgba(99, 102, 241, 0.4);
+  transform: translateY(-1px);
 }
 
-.legend-item strong {
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.legend-color {
-  width: 12px;
-  height: 12px;
-  border-radius: 4px;
-  flex-shrink: 0;
+#controls button:active {
+  transform: translateY(0);
+  background: rgba(99, 102, 241, 0.3);
 }
 
 /* Footer */
@@ -220,7 +227,7 @@ html, body {
 /* Responsive */
 @media (max-width: 480px) {
   #hud {
-    padding: 16px;
+    padding: 14px 16px;
   }
 
   #hud h1 {
@@ -231,44 +238,12 @@ html, body {
     font-size: 12px;
   }
 
-  #legend {
-    gap: 6px;
-    padding: 10px 12px;
+  #controls button {
+    padding: 8px 16px;
+    font-size: 13px;
   }
 
-  .legend-item {
-    font-size: 10px;
+  #impact-bar-container {
+    height: 100px;
   }
-}
-
-/* Loading screen */
-#loading-screen {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 20px;
-  background: var(--bg-primary);
-  transition: opacity 0.6s ease;
-}
-
-#loading-screen.fade-out {
-  opacity: 0;
-  pointer-events: none;
-}
-
-.loader {
-  width: 40px;
-  height: 40px;
-  border: 3px solid var(--border-glass);
-  border-top-color: var(--accent-indigo);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
 }

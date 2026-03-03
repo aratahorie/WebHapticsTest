@@ -1,62 +1,57 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>WebGL × Haptics — 3D Haptic Feedback Demo</title>
-    <meta name="description" content="Interactive 3D WebGL demo with haptic feedback using web-haptics library. Touch the objects to feel different vibration patterns." />
-    <meta name="theme-color" content="#0a0a1a" />
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🫨</text></svg>" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/src/style.css" />
-  </head>
-  <body>
-    <canvas id="webgl-canvas"></canvas>
 
-    <!-- HUD Overlay -->
-    <div id="hud">
-      <div id="hud-title">
-        <span class="hud-icon">🫨</span>
-        <h1>WebGL × Haptics</h1>
-      </div>
-      <p id="hud-instruction">Touch or click the objects to feel haptic feedback</p>
-      <div id="haptic-indicator" class="hidden">
-        <div id="haptic-pulse"></div>
-        <span id="haptic-name"></span>
-      </div>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>WebGL × Haptics — Collision Feedback Demo</title>
+  <meta name="description"
+    content="Physics-based 3D demo where object collisions trigger haptic feedback on mobile devices." />
+  <meta name="theme-color" content="#0a0a1a" />
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🫨</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+
+<body>
+  <canvas id="webgl-canvas"></canvas>
+
+  <!-- HUD -->
+  <div id="hud">
+    <div id="hud-title">
+      <span class="hud-icon">🫨</span>
+      <h1>Collision Haptics</h1>
     </div>
+    <p id="hud-instruction">Drag & throw cubes to feel collision impacts</p>
+  </div>
 
-    <!-- Legend -->
-    <div id="legend">
-      <div class="legend-item">
-        <div class="legend-color" style="background: linear-gradient(135deg, #6366f1, #818cf8);"></div>
-        <span>Sphere → <strong>success</strong></span>
-      </div>
-      <div class="legend-item">
-        <div class="legend-color" style="background: linear-gradient(135deg, #f59e0b, #fbbf24);"></div>
-        <span>Cube → <strong>nudge</strong></span>
-      </div>
-      <div class="legend-item">
-        <div class="legend-color" style="background: linear-gradient(135deg, #ef4444, #f87171);"></div>
-        <span>Torus → <strong>error</strong></span>
-      </div>
-      <div class="legend-item">
-        <div class="legend-color" style="background: linear-gradient(135deg, #10b981, #34d399);"></div>
-        <span>Cone → <strong>buzz</strong></span>
-      </div>
-      <div class="legend-item">
-        <div class="legend-color" style="background: linear-gradient(135deg, #8b5cf6, #a78bfa);"></div>
-        <span>Icosahedron → <strong>custom</strong></span>
-      </div>
+  <!-- Collision indicator -->
+  <div id="collision-flash"></div>
+
+  <!-- Impact meter -->
+  <div id="impact-meter">
+    <div id="impact-label">IMPACT</div>
+    <div id="impact-bar-container">
+      <div id="impact-bar"></div>
     </div>
+  </div>
 
-    <!-- Footer -->
-    <div id="footer">
-      <span>Powered by <a href="https://haptics.lochie.me/" target="_blank" rel="noopener">web-haptics</a> + Three.js</span>
-    </div>
+  <!-- Controls -->
+  <div id="controls">
+    <button id="btn-drop" title="Drop new object">＋ Drop</button>
+    <button id="btn-reset" title="Reset scene">⟳ Reset</button>
+  </div>
 
-    <script type="module" src="/src/main.js"></script>
-  </body>
+  <!-- Footer -->
+  <div id="footer">
+    <span>Powered by <a href="https://haptics.lochie.me/" target="_blank" rel="noopener">web-haptics</a> + Three.js +
+      cannon-es</span>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+
 </html>

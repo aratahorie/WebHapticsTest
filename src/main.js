@@ -1,370 +1,474 @@
 import * as THREE from 'three';
+import * as CANNON from 'cannon-es';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { WebHaptics } from 'web-haptics';
 
 // ============================================
-// Haptics Setup
+// Haptics
 // ============================================
 const haptics = new WebHaptics({ debug: true });
 
-// Haptic pattern map per object type
-const HAPTIC_MAP = {
-    sphere: { pattern: 'success', label: 'SUCCESS', color: '#6366f1' },
-    cube: { pattern: 'nudge', label: 'NUDGE', color: '#f59e0b' },
-    torus: { pattern: 'error', label: 'ERROR', color: '#ef4444' },
-    cone: { pattern: 'buzz', label: 'BUZZ', color: '#10b981' },
-    icosahedron: {
-        pattern: [
-            { duration: 30, intensity: 1 },
-            { delay: 40, duration: 60, intensity: 0.6 },
-            { delay: 30, duration: 30, intensity: 1 },
-            { delay: 40, duration: 100, intensity: 0.4 },
-        ],
-        label: 'CUSTOM',
-        color: '#8b5cf6',
-    },
-};
+// Map collision intensity (0–1) to haptic patterns
+function triggerCollisionHaptic(normalizedForce) {
+    if (normalizedForce < 0.05) return; // ignore tiny impacts
+
+    if (normalizedForce > 0.7) {
+        // Strong impact — heavy + error-style triple buzz
+        haptics.trigger('heavy');
+    } else if (normalizedForce > 0.35) {
+        // Medium impact — nudge
+        haptics.trigger('nudge');
+    } else {
+        // Light impact — light tap
+        haptics.trigger('light');
+    }
+}
+
+// ============================================
+// UI Elements
+// ============================================
+const collisionFlash = document.getElementById('collision-flash');
+const impactBar = document.getElementById('impact-bar');
+const btnDrop = document.getElementById('btn-drop');
+const btnReset = document.getElementById('btn-reset');
+let flashTimeout = null;
+let impactDecayRaf = null;
+let currentImpact = 0;
+
+function showImpact(normalizedForce) {
+    currentImpact = Math.max(currentImpact, normalizedForce);
+    const pct = Math.min(currentImpact * 100, 100);
+    impactBar.style.height = pct + '%';
+    impactBar.classList.toggle('strong', normalizedForce > 0.5);
+
+    // Flash screen edge
+    if (normalizedForce > 0.2) {
+        collisionFlash.classList.add('active');
+        clearTimeout(flashTimeout);
+        flashTimeout = setTimeout(() => {
+            collisionFlash.classList.remove('active');
+        }, 120);
+    }
+
+    // Decay
+    cancelAnimationFrame(impactDecayRaf);
+    decayImpact();
+}
+
+function decayImpact() {
+    impactDecayRaf = requestAnimationFrame(() => {
+        currentImpact *= 0.92;
+        if (currentImpact < 0.01) currentImpact = 0;
+        impactBar.style.height = (currentImpact * 100) + '%';
+        if (currentImpact > 0) decayImpact();
+    });
+}
 
 // ============================================
 // Three.js Setup
 // ============================================
 const canvas = document.getElementById('webgl-canvas');
 const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0a1a);
+scene.fog = new THREE.FogExp2(0x0a0a1a, 0.025);
 
-const camera = new THREE.PerspectiveCamera(
-    60,
-    window.innerWidth / window.innerHeight,
-    0.1,
-    100
-);
-camera.position.set(0, 4, 8);
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(0, 6, 12);
 
-const renderer = new THREE.WebGLRenderer({
-    canvas,
-    antialias: true,
-    alpha: false,
-});
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.2;
+renderer.toneMappingExposure = 1.0;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-// Controls
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
-controls.minDistance = 3;
-controls.maxDistance = 18;
-controls.maxPolarAngle = Math.PI / 2 + 0.1;
-controls.target.set(0, 0.5, 0);
+controls.minDistance = 5;
+controls.maxDistance = 25;
+controls.maxPolarAngle = Math.PI / 2 - 0.05;
+controls.target.set(0, 1, 0);
 
 // ============================================
 // Lighting
 // ============================================
-const ambientLight = new THREE.AmbientLight(0x404060, 0.6);
+const ambientLight = new THREE.AmbientLight(0x404060, 0.5);
 scene.add(ambientLight);
 
-const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
-dirLight.position.set(5, 8, 5);
-dirLight.castShadow = false;
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+dirLight.position.set(8, 12, 6);
+dirLight.castShadow = true;
+dirLight.shadow.mapSize.set(1024, 1024);
+dirLight.shadow.camera.left = -10;
+dirLight.shadow.camera.right = 10;
+dirLight.shadow.camera.top = 10;
+dirLight.shadow.camera.bottom = -10;
+dirLight.shadow.camera.near = 0.1;
+dirLight.shadow.camera.far = 30;
+dirLight.shadow.bias = -0.002;
 scene.add(dirLight);
 
-const pointLight1 = new THREE.PointLight(0x6366f1, 2, 20);
-pointLight1.position.set(-4, 4, -3);
-scene.add(pointLight1);
+const rimLight = new THREE.PointLight(0x6366f1, 1.5, 25);
+rimLight.position.set(-6, 5, -4);
+scene.add(rimLight);
 
-const pointLight2 = new THREE.PointLight(0xf59e0b, 1.5, 20);
-pointLight2.position.set(4, 3, 3);
-scene.add(pointLight2);
+const warmLight = new THREE.PointLight(0xf97316, 1, 20);
+warmLight.position.set(5, 3, 4);
+scene.add(warmLight);
 
 // ============================================
-// Environment (Background)
+// Cannon.js Physics World
 // ============================================
-scene.background = new THREE.Color(0x0a0a1a);
-scene.fog = new THREE.FogExp2(0x0a0a1a, 0.04);
-
-// Ground grid
-const gridHelper = new THREE.GridHelper(30, 30, 0x1a1a3a, 0x12122a);
-gridHelper.position.y = -0.01;
-scene.add(gridHelper);
-
-// Ground plane (invisible but for visual reference)
-const groundGeo = new THREE.PlaneGeometry(30, 30);
-const groundMat = new THREE.MeshStandardMaterial({
-    color: 0x0e0e24,
-    roughness: 0.9,
-    metalness: 0.1,
-    transparent: true,
-    opacity: 0.8,
+const world = new CANNON.World({
+    gravity: new CANNON.Vec3(0, -9.82, 0),
 });
-const ground = new THREE.Mesh(groundGeo, groundMat);
-ground.rotation.x = -Math.PI / 2;
-ground.position.y = -0.02;
-scene.add(ground);
+world.broadphase = new CANNON.NaiveBroadphase();
+world.solver.iterations = 10;
+world.defaultContactMaterial.restitution = 0.45;
+world.defaultContactMaterial.friction = 0.4;
 
 // ============================================
-// Interactive Objects
+// Arena — Floor + Walls
 // ============================================
-const interactiveObjects = [];
+const ARENA_SIZE = 6;
+const WALL_HEIGHT = 3;
+const WALL_THICKNESS = 0.15;
 
-function createMaterial(color, emissiveColor) {
-    return new THREE.MeshStandardMaterial({
+// Floor
+const floorMat = new THREE.MeshStandardMaterial({
+    color: 0x14142e,
+    roughness: 0.8,
+    metalness: 0.2,
+});
+const floorMesh = new THREE.Mesh(new THREE.BoxGeometry(ARENA_SIZE * 2, 0.2, ARENA_SIZE * 2), floorMat);
+floorMesh.position.y = -0.1;
+floorMesh.receiveShadow = true;
+scene.add(floorMesh);
+
+const floorBody = new CANNON.Body({
+    mass: 0,
+    shape: new CANNON.Box(new CANNON.Vec3(ARENA_SIZE, 0.1, ARENA_SIZE)),
+    position: new CANNON.Vec3(0, -0.1, 0),
+});
+world.addBody(floorBody);
+
+// Grid on floor
+const grid = new THREE.GridHelper(ARENA_SIZE * 2, 20, 0x2a2a4a, 0x1a1a3a);
+grid.position.y = 0.01;
+scene.add(grid);
+
+// Wall helper
+const wallMat = new THREE.MeshStandardMaterial({
+    color: 0x1e1e3e,
+    roughness: 0.6,
+    metalness: 0.3,
+    transparent: true,
+    opacity: 0.35,
+});
+
+function createWall(px, py, pz, sx, sy, sz) {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(sx * 2, sy * 2, sz * 2), wallMat);
+    mesh.position.set(px, py, pz);
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+
+    const body = new CANNON.Body({
+        mass: 0,
+        shape: new CANNON.Box(new CANNON.Vec3(sx, sy, sz)),
+        position: new CANNON.Vec3(px, py, pz),
+    });
+    world.addBody(body);
+    return { mesh, body };
+}
+
+// 4 walls
+createWall(0, WALL_HEIGHT / 2, -ARENA_SIZE, ARENA_SIZE, WALL_HEIGHT / 2, WALL_THICKNESS); // back
+createWall(0, WALL_HEIGHT / 2, ARENA_SIZE, ARENA_SIZE, WALL_HEIGHT / 2, WALL_THICKNESS); // front
+createWall(-ARENA_SIZE, WALL_HEIGHT / 2, 0, WALL_THICKNESS, WALL_HEIGHT / 2, ARENA_SIZE); // left
+createWall(ARENA_SIZE, WALL_HEIGHT / 2, 0, WALL_THICKNESS, WALL_HEIGHT / 2, ARENA_SIZE); // right
+
+// ============================================
+// Dynamic Objects
+// ============================================
+const OBJECT_COLORS = [
+    0x6366f1, // indigo
+    0xf59e0b, // amber
+    0xef4444, // red
+    0x10b981, // emerald
+    0x8b5cf6, // purple
+    0x06b6d4, // cyan
+    0xf97316, // orange
+    0xec4899, // pink
+];
+
+const SHAPES = ['sphere', 'box', 'cylinder'];
+const dynamicBodies = []; // { mesh, body, collisionFlashTime }
+const MAX_FORCE = 30; // normalization ceiling for haptic intensity
+
+function createDynamicObject(type, position) {
+    let mesh, body;
+    const color = OBJECT_COLORS[Math.floor(Math.random() * OBJECT_COLORS.length)];
+    const mat = new THREE.MeshStandardMaterial({
         color,
-        emissive: emissiveColor,
-        emissiveIntensity: 0.15,
-        roughness: 0.2,
-        metalness: 0.6,
+        roughness: 0.25,
+        metalness: 0.7,
+        emissive: color,
+        emissiveIntensity: 0.05,
+    });
+
+    const size = 0.4 + Math.random() * 0.3;
+
+    if (type === 'sphere') {
+        mesh = new THREE.Mesh(new THREE.SphereGeometry(size, 32, 32), mat);
+        body = new CANNON.Body({
+            mass: size * 3,
+            shape: new CANNON.Sphere(size),
+        });
+    } else if (type === 'box') {
+        mesh = new THREE.Mesh(new THREE.BoxGeometry(size * 2, size * 2, size * 2), mat);
+        body = new CANNON.Body({
+            mass: size * 4,
+            shape: new CANNON.Box(new CANNON.Vec3(size, size, size)),
+        });
+    } else {
+        mesh = new THREE.Mesh(new THREE.CylinderGeometry(size * 0.8, size * 0.8, size * 2, 24), mat);
+        body = new CANNON.Body({
+            mass: size * 3.5,
+            shape: new CANNON.Cylinder(size * 0.8, size * 0.8, size * 2, 12),
+        });
+    }
+
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+
+    body.position.set(position.x, position.y, position.z);
+    // Add some random angular velocity for visual interest
+    body.angularVelocity.set(
+        (Math.random() - 0.5) * 3,
+        (Math.random() - 0.5) * 3,
+        (Math.random() - 0.5) * 3
+    );
+    world.addBody(body);
+
+    const entry = { mesh, body, emissiveBase: 0.05, lastCollisionTime: 0 };
+
+    // Collision listener
+    body.addEventListener('collide', (event) => {
+        const contact = event.contact;
+        const impulse = contact.getImpactVelocityAlongNormal();
+        const force = Math.abs(impulse);
+
+        // Cooldown: don't spam haptics (min 80ms between events per body)
+        const now = performance.now();
+        if (now - entry.lastCollisionTime < 80) return;
+        entry.lastCollisionTime = now;
+
+        if (force < 0.5) return; // ignore micro-collisions
+
+        const normalizedForce = Math.min(force / MAX_FORCE, 1);
+
+        // Trigger haptic
+        triggerCollisionHaptic(normalizedForce);
+
+        // Visual feedback
+        showImpact(normalizedForce);
+
+        // Emissive flash on collided object
+        entry.emissiveBase = 0.3 + normalizedForce * 0.7;
+    });
+
+    dynamicBodies.push(entry);
+    return entry;
+}
+
+// Initial objects
+function spawnInitialObjects() {
+    const positions = [
+        { x: -2, y: 5, z: -1 },
+        { x: 1, y: 7, z: 1 },
+        { x: -1, y: 9, z: 2 },
+        { x: 2, y: 6, z: -2 },
+        { x: 0, y: 11, z: 0 },
+        { x: -2.5, y: 8, z: 1.5 },
+        { x: 1.5, y: 10, z: -1.5 },
+    ];
+
+    positions.forEach((pos, i) => {
+        const type = SHAPES[i % SHAPES.length];
+        createDynamicObject(type, pos);
     });
 }
 
-// Sphere
-const sphereGeo = new THREE.SphereGeometry(0.8, 64, 64);
-const sphereMat = createMaterial(0x6366f1, 0x4338ca);
-const sphere = new THREE.Mesh(sphereGeo, sphereMat);
-sphere.position.set(-3, 1, 0);
-sphere.userData = { type: 'sphere', baseY: 1, phase: 0 };
-scene.add(sphere);
-interactiveObjects.push(sphere);
-
-// Cube (rounded)
-const cubeGeo = new THREE.BoxGeometry(1.2, 1.2, 1.2, 4, 4, 4);
-const cubeMat = createMaterial(0xf59e0b, 0xd97706);
-const cube = new THREE.Mesh(cubeGeo, cubeMat);
-cube.position.set(-1, 1, 2);
-cube.userData = { type: 'cube', baseY: 1, phase: 1 };
-scene.add(cube);
-interactiveObjects.push(cube);
-
-// Torus
-const torusGeo = new THREE.TorusGeometry(0.65, 0.3, 32, 64);
-const torusMat = createMaterial(0xef4444, 0xb91c1c);
-const torus = new THREE.Mesh(torusGeo, torusMat);
-torus.position.set(1.5, 1.2, -1);
-torus.userData = { type: 'torus', baseY: 1.2, phase: 2 };
-scene.add(torus);
-interactiveObjects.push(torus);
-
-// Cone
-const coneGeo = new THREE.ConeGeometry(0.7, 1.4, 32);
-const coneMat = createMaterial(0x10b981, 0x059669);
-const cone = new THREE.Mesh(coneGeo, coneMat);
-cone.position.set(3, 0.7, 1.5);
-cone.userData = { type: 'cone', baseY: 0.7, phase: 3 };
-scene.add(cone);
-interactiveObjects.push(cone);
-
-// Icosahedron
-const icoGeo = new THREE.IcosahedronGeometry(0.75, 0);
-const icoMat = createMaterial(0x8b5cf6, 0x7c3aed);
-const ico = new THREE.Mesh(icoGeo, icoMat);
-ico.position.set(0, 1, -2.5);
-ico.userData = { type: 'icosahedron', baseY: 1, phase: 4 };
-scene.add(ico);
-interactiveObjects.push(ico);
-
-// Floating particles
-const particleCount = 200;
-const particleGeo = new THREE.BufferGeometry();
-const particlePositions = new Float32Array(particleCount * 3);
-for (let i = 0; i < particleCount; i++) {
-    particlePositions[i * 3] = (Math.random() - 0.5) * 20;
-    particlePositions[i * 3 + 1] = Math.random() * 10;
-    particlePositions[i * 3 + 2] = (Math.random() - 0.5) * 20;
-}
-particleGeo.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
-const particleMat = new THREE.PointsMaterial({
-    color: 0x6366f1,
-    size: 0.03,
-    transparent: true,
-    opacity: 0.6,
-    sizeAttenuation: true,
-});
-const particles = new THREE.Points(particleGeo, particleMat);
-scene.add(particles);
+spawnInitialObjects();
 
 // ============================================
-// Raycaster & Interaction
+// Drop button — spawns a random object
+// ============================================
+btnDrop.addEventListener('pointerup', () => {
+    const x = (Math.random() - 0.5) * (ARENA_SIZE - 1);
+    const z = (Math.random() - 0.5) * (ARENA_SIZE - 1);
+    const type = SHAPES[Math.floor(Math.random() * SHAPES.length)];
+    createDynamicObject(type, { x, y: 8 + Math.random() * 4, z });
+
+    // Trigger a light haptic for the button press itself
+    haptics.trigger('selection');
+});
+
+// Reset button
+btnReset.addEventListener('pointerup', () => {
+    // Remove all dynamic bodies
+    dynamicBodies.forEach(({ mesh, body }) => {
+        scene.remove(mesh);
+        mesh.geometry.dispose();
+        mesh.material.dispose();
+        world.removeBody(body);
+    });
+    dynamicBodies.length = 0;
+
+    haptics.trigger('warning');
+    spawnInitialObjects();
+});
+
+// ============================================
+// Drag & Throw
 // ============================================
 const raycaster = new THREE.Raycaster();
-const pointer = new THREE.Vector2();
-let hoveredObject = null;
-let animatingObjects = new Map();
+const pointerNDC = new THREE.Vector2();
+let draggedEntry = null;
+let dragPlaneY = 2;
+let pointerDownTime = 0;
+let lastDragPos = new CANNON.Vec3();
 
-const hapticIndicator = document.getElementById('haptic-indicator');
-const hapticName = document.getElementById('haptic-name');
-const hapticPulse = document.getElementById('haptic-pulse');
-let indicatorTimeout = null;
+// Plane for drag movement
+const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const dragIntersect = new THREE.Vector3();
 
-function showHapticFeedback(type) {
-    const config = HAPTIC_MAP[type];
-    if (!config) return;
-
-    hapticName.textContent = config.label;
-    hapticPulse.style.color = config.color;
-    hapticPulse.style.background = config.color;
-
-    hapticIndicator.classList.remove('hidden');
-    hapticIndicator.classList.add('visible');
-
-    clearTimeout(indicatorTimeout);
-    indicatorTimeout = setTimeout(() => {
-        hapticIndicator.classList.remove('visible');
-        hapticIndicator.classList.add('hidden');
-    }, 1500);
-}
-
-function triggerHaptic(type) {
-    const config = HAPTIC_MAP[type];
-    if (!config) return;
-
-    haptics.trigger(config.pattern);
-    showHapticFeedback(type);
-}
-
-function onTapObject(object) {
-    const type = object.userData.type;
-    triggerHaptic(type);
-
-    // Visual feedback — bounce + flash
-    animatingObjects.set(object, {
-        startTime: performance.now(),
-        duration: 400,
-        originalScale: object.scale.clone(),
-        originalEmissiveIntensity: object.material.emissiveIntensity,
-    });
-}
-
-// Track tap vs drag to avoid triggering haptics during orbit controls
-let pointerDownPos = null;
-const TAP_THRESHOLD = 10; // px — movement beyond this is a drag, not a tap
-
-function handlePointerDown(event) {
-    pointerDownPos = { x: event.clientX, y: event.clientY };
-}
-
-function handlePointerUp(event) {
-    if (!pointerDownPos) return;
-
-    const dx = event.clientX - pointerDownPos.x;
-    const dy = event.clientY - pointerDownPos.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    pointerDownPos = null;
-
-    // If the pointer moved too much, it's a drag (orbit controls), not a tap
-    if (dist > TAP_THRESHOLD) return;
-
-    pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
-    pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
-
-    raycaster.setFromCamera(pointer, camera);
-    const intersects = raycaster.intersectObjects(interactiveObjects);
-
-    if (intersects.length > 0) {
-        // Trigger haptics synchronously within the user gesture context (critical for iOS)
-        onTapObject(intersects[0].object);
-    }
-}
-
-function handlePointerMove(event) {
+function getPointerPos(event) {
     const x = event.clientX ?? event.touches?.[0]?.clientX;
     const y = event.clientY ?? event.touches?.[0]?.clientY;
-    if (x === undefined || y === undefined) return;
+    return { x, y };
+}
 
-    pointer.x = (x / window.innerWidth) * 2 - 1;
-    pointer.y = -(y / window.innerHeight) * 2 + 1;
+function onPointerDown(event) {
+    const { x, y } = getPointerPos(event);
+    if (x == null || y == null) return;
 
-    raycaster.setFromCamera(pointer, camera);
-    const intersects = raycaster.intersectObjects(interactiveObjects);
+    pointerNDC.x = (x / window.innerWidth) * 2 - 1;
+    pointerNDC.y = -(y / window.innerHeight) * 2 + 1;
+
+    raycaster.setFromCamera(pointerNDC, camera);
+    const meshes = dynamicBodies.map(e => e.mesh);
+    const intersects = raycaster.intersectObjects(meshes);
 
     if (intersects.length > 0) {
-        const obj = intersects[0].object;
-        if (hoveredObject !== obj) {
-            if (hoveredObject) {
-                hoveredObject.material.emissiveIntensity = 0.15;
-            }
-            hoveredObject = obj;
-            canvas.style.cursor = 'pointer';
+        const hitMesh = intersects[0].object;
+        const entry = dynamicBodies.find(e => e.mesh === hitMesh);
+        if (entry) {
+            draggedEntry = entry;
+            dragPlaneY = entry.body.position.y;
+            dragPlane.constant = -dragPlaneY;
+
+            // Freeze physics while dragging
+            entry.body.type = CANNON.Body.KINEMATIC;
+            entry.body.velocity.setZero();
+            entry.body.angularVelocity.setZero();
+
+            lastDragPos.copy(entry.body.position);
+            pointerDownTime = performance.now();
+
+            controls.enabled = false;
+            haptics.trigger('selection');
         }
-    } else {
-        if (hoveredObject) {
-            hoveredObject.material.emissiveIntensity = 0.15;
-            hoveredObject = null;
-        }
-        canvas.style.cursor = 'grab';
     }
 }
 
-// Use pointerup (not pointerdown) — iOS Safari requires haptic triggers
-// in click/pointerup user gesture context for the hidden checkbox trick to work.
-// Do NOT use { passive: false } or event.preventDefault() as this blocks
-// iOS from recognizing the gesture as a valid user interaction.
-canvas.addEventListener('pointerdown', handlePointerDown);
-canvas.addEventListener('pointerup', handlePointerUp);
-canvas.addEventListener('pointermove', handlePointerMove, { passive: true });
+function onPointerMove(event) {
+    if (!draggedEntry) return;
+
+    const { x, y } = getPointerPos(event);
+    if (x == null || y == null) return;
+
+    pointerNDC.x = (x / window.innerWidth) * 2 - 1;
+    pointerNDC.y = -(y / window.innerHeight) * 2 + 1;
+
+    raycaster.setFromCamera(pointerNDC, camera);
+    if (raycaster.ray.intersectPlane(dragPlane, dragIntersect)) {
+        // Clamp to arena
+        const cx = Math.max(-ARENA_SIZE + 1, Math.min(ARENA_SIZE - 1, dragIntersect.x));
+        const cz = Math.max(-ARENA_SIZE + 1, Math.min(ARENA_SIZE - 1, dragIntersect.z));
+
+        lastDragPos.copy(draggedEntry.body.position);
+
+        draggedEntry.body.position.x = cx;
+        draggedEntry.body.position.z = cz;
+    }
+}
+
+function onPointerUp(event) {
+    if (!draggedEntry) return;
+
+    // Calculate throw velocity from last movement
+    const dt = Math.max((performance.now() - pointerDownTime) / 1000, 0.016);
+    const vx = (draggedEntry.body.position.x - lastDragPos.x) / dt * 0.3;
+    const vz = (draggedEntry.body.position.z - lastDragPos.z) / dt * 0.3;
+
+    // Make dynamic again
+    draggedEntry.body.type = CANNON.Body.DYNAMIC;
+    draggedEntry.body.velocity.set(
+        Math.max(-15, Math.min(15, vx)),
+        0,
+        Math.max(-15, Math.min(15, vz))
+    );
+
+    draggedEntry = null;
+    controls.enabled = true;
+}
+
+canvas.addEventListener('pointerdown', onPointerDown);
+canvas.addEventListener('pointermove', onPointerMove);
+canvas.addEventListener('pointerup', onPointerUp);
+canvas.addEventListener('pointercancel', onPointerUp);
 
 // ============================================
 // Animation Loop
 // ============================================
 const clock = new THREE.Clock();
+const fixedTimeStep = 1 / 60;
 
 function animate() {
     requestAnimationFrame(animate);
-    const elapsed = clock.getElapsedTime();
-    const now = performance.now();
+    const delta = clock.getDelta();
 
-    // Floating animation for objects
-    interactiveObjects.forEach((obj) => {
-        const phase = obj.userData.phase;
-        const baseY = obj.userData.baseY;
-        obj.position.y = baseY + Math.sin(elapsed * 0.8 + phase * 1.3) * 0.15;
+    // Step physics
+    world.step(fixedTimeStep, delta, 3);
 
-        // Gentle rotation
-        obj.rotation.y = elapsed * 0.3 + phase;
-        if (obj.userData.type === 'torus') {
-            obj.rotation.x = elapsed * 0.4 + phase;
+    // Sync Three.js meshes with cannon bodies
+    dynamicBodies.forEach((entry) => {
+        entry.mesh.position.copy(entry.body.position);
+        entry.mesh.quaternion.copy(entry.body.quaternion);
+
+        // Decay emissive flash
+        if (entry.emissiveBase > 0.05) {
+            entry.emissiveBase *= 0.93;
+            if (entry.emissiveBase < 0.06) entry.emissiveBase = 0.05;
         }
+        entry.mesh.material.emissiveIntensity = entry.emissiveBase;
     });
 
-    // Hover glow
-    if (hoveredObject && !animatingObjects.has(hoveredObject)) {
-        hoveredObject.material.emissiveIntensity =
-            0.3 + Math.sin(elapsed * 4) * 0.1;
-    }
-
-    // Tap animation
-    animatingObjects.forEach((anim, obj) => {
-        const progress = Math.min((now - anim.startTime) / anim.duration, 1);
-
-        // Bounce: scale up then back
-        const bounce = Math.sin(progress * Math.PI) * 0.3;
-        const s = 1 + bounce;
-        obj.scale.set(s, s, s);
-
-        // Flash emissive
-        obj.material.emissiveIntensity =
-            anim.originalEmissiveIntensity + (1 - progress) * 1.5;
-
-        if (progress >= 1) {
-            obj.scale.copy(anim.originalScale);
-            obj.material.emissiveIntensity = anim.originalEmissiveIntensity;
-            animatingObjects.delete(obj);
-        }
-    });
-
-    // Particle drift
-    particles.rotation.y = elapsed * 0.02;
-
-    // Point lights subtle movement
-    pointLight1.position.x = -4 + Math.sin(elapsed * 0.5) * 2;
-    pointLight1.position.z = -3 + Math.cos(elapsed * 0.3) * 2;
-    pointLight2.position.x = 4 + Math.cos(elapsed * 0.4) * 2;
+    // Subtle light animation
+    const t = clock.elapsedTime;
+    rimLight.position.x = -6 + Math.sin(t * 0.3) * 2;
+    warmLight.position.z = 4 + Math.cos(t * 0.4) * 2;
 
     controls.update();
     renderer.render(scene, camera);
 }
 
 // ============================================
-// Resize Handler
+// Resize
 // ============================================
 function onResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
@@ -372,7 +476,6 @@ function onResize() {
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 }
-
 window.addEventListener('resize', onResize);
 
 // ============================================
