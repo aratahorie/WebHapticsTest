@@ -4,103 +4,39 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { WebHaptics } from 'web-haptics';
 
 // ============================================
-// Haptics — iOS-compatible collision haptics
+// Haptics
 // ============================================
-// Strategy:
-//   iOS: The <input type="checkbox" switch> toggle fires system-level haptics.
-//        web-haptics clicks this hidden checkbox in haptics.trigger().
-//        We call haptics.trigger() from pointermove/pointerup handlers (event context).
-//   Android: navigator.vibrate() works outside user gesture after initial unlock.
-//
-// Collision events from cannon-es fire in rAF (no event context).
-// We queue collision forces → drain the queue inside pointer event handlers.
+// Detect iOS: no navigator.vibrate on iOS Safari
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
-const haptics = new WebHaptics({ debug: true });
+// On iOS: debug=false avoids AudioContext await that blocks hapticLabel.click().
+// On desktop: debug=true provides audible click feedback.
+const haptics = new WebHaptics({ debug: !isIOS });
 
-let hapticsPrimed = false;
-let isDragging = false; // true while user is dragging an object
-
-// Collision queue
-let pendingCollisionForce = 0;
+// ============================================
+// Collision-triggered haptics
+// ============================================
 let lastHapticTime = 0;
-const HAPTIC_COOLDOWN = 50; // ms
+const HAPTIC_COOLDOWN = 120; // ms — prevent rapid trigger() calls from cancelling each other
 
-function primeHaptics() {
-    if (hapticsPrimed) return;
-    hapticsPrimed = true;
-    haptics.trigger('selection');
-}
-
-/**
- * Queue a collision haptic (called from cannon-es collision callback in rAF).
- * On Android, also vibrate directly.
- */
-function queueCollisionHaptic(normalizedForce) {
+function triggerCollisionHaptic(normalizedForce) {
     if (normalizedForce < 0.05) return;
-
-    // Android: vibrate immediately (works after initial user gesture)
-    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-        const now = performance.now();
-        if (now - lastHapticTime > HAPTIC_COOLDOWN) {
-            lastHapticTime = now;
-            if (normalizedForce > 0.7) {
-                navigator.vibrate([40, 30, 40]);
-            } else if (normalizedForce > 0.35) {
-                navigator.vibrate([25, 20, 15]);
-            } else {
-                navigator.vibrate([15]);
-            }
-        }
-    }
-
-    // Queue for iOS (will be drained in next pointer event handler)
-    pendingCollisionForce = Math.max(pendingCollisionForce, normalizedForce);
-}
-
-/**
- * Drain queued collision haptics — MUST be called from pointer event handlers.
- * On iOS, this triggers haptics.trigger() → label.click() → checkbox toggle → system haptic.
- */
-function drainCollisionQueue() {
-    if (pendingCollisionForce <= 0) return;
 
     const now = performance.now();
     if (now - lastHapticTime < HAPTIC_COOLDOWN) return;
     lastHapticTime = now;
 
-    const force = pendingCollisionForce;
-    pendingCollisionForce = 0;
-
-    if (force > 0.7) {
+    // Choose pattern based on force.
+    // Use simple single-pulse presets to avoid long patterns being cancelled by next collision.
+    if (normalizedForce > 0.7) {
         haptics.trigger('heavy');
-    } else if (force > 0.35) {
-        haptics.trigger('nudge');
+    } else if (normalizedForce > 0.35) {
+        haptics.trigger('medium');
     } else {
         haptics.trigger('light');
     }
 }
-
-// ============================================
-// Global pointer listeners for iOS haptic draining
-// ============================================
-document.addEventListener('pointerdown', () => {
-    primeHaptics();
-    drainCollisionQueue();
-}, { passive: true });
-
-// pointermove fires continuously during drag — perfect for draining collision haptics
-document.addEventListener('pointermove', () => {
-    if (isDragging) drainCollisionQueue();
-}, { passive: true });
-
-document.addEventListener('pointerup', () => {
-    drainCollisionQueue();
-}, { passive: true });
-
-// Also listen to touch events (iOS Safari sometimes prefers these)
-document.addEventListener('touchmove', () => {
-    if (isDragging) drainCollisionQueue();
-}, { passive: true });
 
 // ============================================
 // UI Elements
@@ -212,10 +148,10 @@ const ARENA_SIZE = 6;
 const WALL_HEIGHT = 3;
 const WALL_THICKNESS = 0.15;
 
-const floorMat = new THREE.MeshStandardMaterial({
+const floorMat3D = new THREE.MeshStandardMaterial({
     color: 0x14142e, roughness: 0.8, metalness: 0.2,
 });
-const floorMesh = new THREE.Mesh(new THREE.BoxGeometry(ARENA_SIZE * 2, 0.2, ARENA_SIZE * 2), floorMat);
+const floorMesh = new THREE.Mesh(new THREE.BoxGeometry(ARENA_SIZE * 2, 0.2, ARENA_SIZE * 2), floorMat3D);
 floorMesh.position.y = -0.1;
 floorMesh.receiveShadow = true;
 scene.add(floorMesh);
@@ -231,16 +167,15 @@ const grid = new THREE.GridHelper(ARENA_SIZE * 2, 20, 0x2a2a4a, 0x1a1a3a);
 grid.position.y = 0.01;
 scene.add(grid);
 
-const wallMat = new THREE.MeshStandardMaterial({
+const wallMat3D = new THREE.MeshStandardMaterial({
     color: 0x1e1e3e, roughness: 0.6, metalness: 0.3, transparent: true, opacity: 0.35,
 });
 
 function createWall(px, py, pz, sx, sy, sz) {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(sx * 2, sy * 2, sz * 2), wallMat);
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(sx * 2, sy * 2, sz * 2), wallMat3D);
     mesh.position.set(px, py, pz);
     mesh.receiveShadow = true;
     scene.add(mesh);
-
     const body = new CANNON.Body({
         mass: 0,
         shape: new CANNON.Box(new CANNON.Vec3(sx, sy, sz)),
@@ -299,7 +234,6 @@ function createDynamicObject(type, position) {
 
     const entry = { mesh, body, emissiveBase: 0.05, lastCollisionTime: 0 };
 
-    // Collision listener — queues haptic force (runs in rAF, not event context)
     body.addEventListener('collide', (event) => {
         const force = Math.abs(event.contact.getImpactVelocityAlongNormal());
         const now = performance.now();
@@ -308,11 +242,7 @@ function createDynamicObject(type, position) {
         if (force < 0.5) return;
 
         const normalizedForce = Math.min(force / MAX_FORCE, 1);
-
-        // Queue for haptic (Android vibrates directly, iOS waits for event handler)
-        queueCollisionHaptic(normalizedForce);
-
-        // Visual feedback
+        triggerCollisionHaptic(normalizedForce);
         showImpact(normalizedForce);
         entry.emissiveBase = 0.3 + normalizedForce * 0.7;
     });
@@ -342,7 +272,6 @@ spawnInitialObjects();
 // Drop / Reset buttons
 // ============================================
 btnDrop.addEventListener('click', () => {
-    primeHaptics();
     const x = (Math.random() - 0.5) * (ARENA_SIZE - 1);
     const z = (Math.random() - 0.5) * (ARENA_SIZE - 1);
     const type = SHAPES[Math.floor(Math.random() * SHAPES.length)];
@@ -351,7 +280,6 @@ btnDrop.addEventListener('click', () => {
 });
 
 btnReset.addEventListener('click', () => {
-    primeHaptics();
     dynamicBodies.forEach(({ mesh, body }) => {
         scene.remove(mesh);
         mesh.geometry.dispose();
@@ -364,7 +292,7 @@ btnReset.addEventListener('click', () => {
 });
 
 // ============================================
-// Drag & Throw — keeps body DYNAMIC so collisions happen during drag
+// Drag & Throw — spring-force keeps physics collisions active
 // ============================================
 const raycaster = new THREE.Raycaster();
 const pointerNDC = new THREE.Vector2();
@@ -375,18 +303,13 @@ let lastDragWorldPos = new THREE.Vector3();
 const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const dragIntersect = new THREE.Vector3();
 
-// Spring constraint: pulls the dragged body toward the pointer position
-// The body stays DYNAMIC → collisions with other objects still trigger
 let dragSpringTarget = new CANNON.Vec3();
-const DRAG_SPRING_STIFFNESS = 80;  // force multiplier
-const DRAG_DAMPING = 0.85;         // velocity damping during drag
+const DRAG_SPRING_STIFFNESS = 80;
+const DRAG_DAMPING = 0.85;
 
 function onPointerDown(event) {
-    const x = event.clientX;
-    const y = event.clientY;
-
-    pointerNDC.x = (x / window.innerWidth) * 2 - 1;
-    pointerNDC.y = -(y / window.innerHeight) * 2 + 1;
+    pointerNDC.x = (event.clientX / window.innerWidth) * 2 - 1;
+    pointerNDC.y = -(event.clientY / window.innerHeight) * 2 + 1;
 
     raycaster.setFromCamera(pointerNDC, camera);
     const meshes = dynamicBodies.map(e => e.mesh);
@@ -396,12 +319,9 @@ function onPointerDown(event) {
         const entry = dynamicBodies.find(e => e.mesh === intersects[0].object);
         if (entry) {
             draggedEntry = entry;
-            isDragging = true;
             dragPlaneY = entry.body.position.y;
             dragPlane.constant = -dragPlaneY;
 
-            // Keep body DYNAMIC — collisions will still fire!
-            // Just clear current velocity and add high damping
             entry.body.velocity.setZero();
             entry.body.angularVelocity.setZero();
             entry.body.linearDamping = DRAG_DAMPING;
@@ -410,9 +330,7 @@ function onPointerDown(event) {
             lastDragWorldPos.set(entry.body.position.x, entry.body.position.y, entry.body.position.z);
 
             controls.enabled = false;
-
-            // Prime haptics on grab (but use a simple trigger to not waste activation)
-            primeHaptics();
+            haptics.trigger('selection');
         }
     }
 }
@@ -427,28 +345,16 @@ function onPointerMove(event) {
     if (raycaster.ray.intersectPlane(dragPlane, dragIntersect)) {
         const cx = Math.max(-ARENA_SIZE + 1, Math.min(ARENA_SIZE - 1, dragIntersect.x));
         const cz = Math.max(-ARENA_SIZE + 1, Math.min(ARENA_SIZE - 1, dragIntersect.z));
-
         dragSpringTarget.set(cx, dragPlaneY, cz);
         lastDragWorldPos.set(cx, dragPlaneY, cz);
     }
-
-    // Drain any pending collision haptics in this event handler context (for iOS)
-    drainCollisionQueue();
 }
 
 function onPointerUp() {
     if (!draggedEntry) return;
-
-    // Restore normal damping
     draggedEntry.body.linearDamping = 0.01;
-
-    // The body already has velocity from the spring force — it will fly naturally
     draggedEntry = null;
-    isDragging = false;
     controls.enabled = true;
-
-    // Drain any remaining collision haptics
-    drainCollisionQueue();
 }
 
 canvas.addEventListener('pointerdown', onPointerDown);
@@ -466,24 +372,21 @@ function animate() {
     requestAnimationFrame(animate);
     const delta = clock.getDelta();
 
-    // Apply spring force to dragged body (keeps it dynamic for collision detection)
+    // Apply spring force to dragged body
     if (draggedEntry) {
         const body = draggedEntry.body;
         const dx = dragSpringTarget.x - body.position.x;
         const dy = dragSpringTarget.y - body.position.y;
         const dz = dragSpringTarget.z - body.position.z;
-
         body.force.set(
             dx * DRAG_SPRING_STIFFNESS * body.mass,
-            dy * DRAG_SPRING_STIFFNESS * body.mass - world.gravity.y * body.mass, // counteract gravity
+            dy * DRAG_SPRING_STIFFNESS * body.mass - world.gravity.y * body.mass,
             dz * DRAG_SPRING_STIFFNESS * body.mass
         );
     }
 
-    // Step physics
     world.step(fixedTimeStep, delta, 3);
 
-    // Sync meshes
     dynamicBodies.forEach((entry) => {
         entry.mesh.position.copy(entry.body.position);
         entry.mesh.quaternion.copy(entry.body.quaternion);
