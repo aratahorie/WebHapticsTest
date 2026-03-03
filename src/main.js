@@ -4,37 +4,114 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { WebHaptics } from 'web-haptics';
 
 // ============================================
-// Haptics
+// Platform detection
 // ============================================
-// Detect iOS: no navigator.vibrate on iOS Safari
 const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
     (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-
-// On iOS: debug=false avoids AudioContext await that blocks hapticLabel.click().
-// On desktop: debug=true provides audible click feedback.
-const haptics = new WebHaptics({ debug: !isIOS });
+const hasVibrate = typeof navigator.vibrate === 'function';
 
 // ============================================
-// Collision-triggered haptics
+// Web Audio — collision impact sounds
 // ============================================
-let lastHapticTime = 0;
-const HAPTIC_COOLDOWN = 120; // ms — prevent rapid trigger() calls from cancelling each other
+// Works on ALL platforms after first user touch unlocks AudioContext.
+// Provides audio feedback for collisions regardless of user gesture context.
+let audioCtx = null;
 
-function triggerCollisionHaptic(normalizedForce) {
+function unlockAudio() {
+    if (audioCtx) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    // iOS requires resume inside user gesture
+    if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+    }
+}
+
+// Synthesize a short percussive impact sound
+function playImpactSound(normalizedForce) {
+    if (!audioCtx || audioCtx.state !== 'running') return;
+
+    const now = audioCtx.currentTime;
+
+    // Noise burst for impact texture
+    const duration = 0.03 + normalizedForce * 0.04; // 30-70ms
+    const bufferSize = Math.ceil(audioCtx.sampleRate * duration);
+    const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const data = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+        // Exponential decay noise
+        data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufferSize * 0.2));
+    }
+
+    const noiseSource = audioCtx.createBufferSource();
+    noiseSource.buffer = noiseBuffer;
+
+    // Low-pass filter for a "thud" character
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 300 + normalizedForce * 800; // 300-1100 Hz
+    filter.Q.value = 1.5;
+
+    // Gain with impact force
+    const gain = audioCtx.createGain();
+    gain.gain.setValueAtTime(0.15 + normalizedForce * 0.35, now); // 0.15-0.5
+    gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+    // Sub-bass oscillator for heavy impacts
+    let osc = null;
+    if (normalizedForce > 0.3) {
+        osc = audioCtx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(60 + normalizedForce * 40, now); // 60-100 Hz
+        osc.frequency.exponentialRampToValueAtTime(30, now + duration);
+
+        const oscGain = audioCtx.createGain();
+        oscGain.gain.setValueAtTime(normalizedForce * 0.3, now);
+        oscGain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+        osc.connect(oscGain);
+        oscGain.connect(audioCtx.destination);
+        osc.start(now);
+        osc.stop(now + duration);
+    }
+
+    noiseSource.connect(filter);
+    filter.connect(gain);
+    gain.connect(audioCtx.destination);
+
+    noiseSource.start(now);
+    noiseSource.stop(now + duration);
+}
+
+// ============================================
+// Haptics (via web-haptics — for user-gesture-driven events only)
+// ============================================
+const haptics = new WebHaptics({ debug: false });
+
+// ============================================
+// Collision feedback — combines audio + vibration
+// ============================================
+let lastCollisionTime = 0;
+const COLLISION_COOLDOWN = 80; // ms
+
+function onCollision(normalizedForce) {
     if (normalizedForce < 0.05) return;
 
     const now = performance.now();
-    if (now - lastHapticTime < HAPTIC_COOLDOWN) return;
-    lastHapticTime = now;
+    if (now - lastCollisionTime < COLLISION_COOLDOWN) return;
+    lastCollisionTime = now;
 
-    // Choose pattern based on force.
-    // Use simple single-pulse presets to avoid long patterns being cancelled by next collision.
-    if (normalizedForce > 0.7) {
-        haptics.trigger('heavy');
-    } else if (normalizedForce > 0.35) {
-        haptics.trigger('medium');
-    } else {
-        haptics.trigger('light');
+    // Audio feedback (works on all platforms from any context after unlock)
+    playImpactSound(normalizedForce);
+
+    // Vibration API (Android — works from rAF after initial user gesture)
+    if (hasVibrate) {
+        if (normalizedForce > 0.7) {
+            navigator.vibrate([30, 20, 30]);
+        } else if (normalizedForce > 0.35) {
+            navigator.vibrate([20]);
+        } else {
+            navigator.vibrate([12]);
+        }
     }
 }
 
@@ -242,7 +319,7 @@ function createDynamicObject(type, position) {
         if (force < 0.5) return;
 
         const normalizedForce = Math.min(force / MAX_FORCE, 1);
-        triggerCollisionHaptic(normalizedForce);
+        onCollision(normalizedForce);
         showImpact(normalizedForce);
         entry.emissiveBase = 0.3 + normalizedForce * 0.7;
     });
@@ -269,17 +346,30 @@ function spawnInitialObjects() {
 spawnInitialObjects();
 
 // ============================================
-// Drop / Reset buttons
+// Unlock audio on first touch/click (required by all browsers)
+// ============================================
+function handleFirstInteraction() {
+    unlockAudio();
+    document.removeEventListener('touchstart', handleFirstInteraction);
+    document.removeEventListener('pointerdown', handleFirstInteraction);
+}
+document.addEventListener('touchstart', handleFirstInteraction, { passive: true });
+document.addEventListener('pointerdown', handleFirstInteraction, { passive: true });
+
+// ============================================
+// Drop / Reset buttons (haptics trigger from user gesture = works on iOS)
 // ============================================
 btnDrop.addEventListener('click', () => {
+    unlockAudio();
     const x = (Math.random() - 0.5) * (ARENA_SIZE - 1);
     const z = (Math.random() - 0.5) * (ARENA_SIZE - 1);
     const type = SHAPES[Math.floor(Math.random() * SHAPES.length)];
     createDynamicObject(type, { x, y: 8 + Math.random() * 4, z });
-    haptics.trigger('selection');
+    haptics.trigger('selection'); // user gesture context → works on iOS
 });
 
 btnReset.addEventListener('click', () => {
+    unlockAudio();
     dynamicBodies.forEach(({ mesh, body }) => {
         scene.remove(mesh);
         mesh.geometry.dispose();
@@ -287,7 +377,7 @@ btnReset.addEventListener('click', () => {
         world.removeBody(body);
     });
     dynamicBodies.length = 0;
-    haptics.trigger('warning');
+    haptics.trigger('warning'); // user gesture context → works on iOS
     spawnInitialObjects();
 });
 
@@ -298,7 +388,6 @@ const raycaster = new THREE.Raycaster();
 const pointerNDC = new THREE.Vector2();
 let draggedEntry = null;
 let dragPlaneY = 2;
-let lastDragWorldPos = new THREE.Vector3();
 
 const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const dragIntersect = new THREE.Vector3();
@@ -308,6 +397,8 @@ const DRAG_SPRING_STIFFNESS = 80;
 const DRAG_DAMPING = 0.85;
 
 function onPointerDown(event) {
+    unlockAudio();
+
     pointerNDC.x = (event.clientX / window.innerWidth) * 2 - 1;
     pointerNDC.y = -(event.clientY / window.innerHeight) * 2 + 1;
 
@@ -327,10 +418,9 @@ function onPointerDown(event) {
             entry.body.linearDamping = DRAG_DAMPING;
 
             dragSpringTarget.set(entry.body.position.x, entry.body.position.y, entry.body.position.z);
-            lastDragWorldPos.set(entry.body.position.x, entry.body.position.y, entry.body.position.z);
 
             controls.enabled = false;
-            haptics.trigger('selection');
+            haptics.trigger('selection'); // user gesture context → iOS haptic
         }
     }
 }
@@ -346,7 +436,6 @@ function onPointerMove(event) {
         const cx = Math.max(-ARENA_SIZE + 1, Math.min(ARENA_SIZE - 1, dragIntersect.x));
         const cz = Math.max(-ARENA_SIZE + 1, Math.min(ARENA_SIZE - 1, dragIntersect.z));
         dragSpringTarget.set(cx, dragPlaneY, cz);
-        lastDragWorldPos.set(cx, dragPlaneY, cz);
     }
 }
 
@@ -372,7 +461,6 @@ function animate() {
     requestAnimationFrame(animate);
     const delta = clock.getDelta();
 
-    // Apply spring force to dragged body
     if (draggedEntry) {
         const body = draggedEntry.body;
         const dx = dragSpringTarget.x - body.position.x;
@@ -417,7 +505,4 @@ function onResize() {
 }
 window.addEventListener('resize', onResize);
 
-// ============================================
-// Start
-// ============================================
 animate();
